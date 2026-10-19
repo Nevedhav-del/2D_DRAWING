@@ -5,9 +5,11 @@ class Connection(BaseModel):
     part_a_item: int = Field(description="Item number of first connected part")
     part_b_item: int = Field(description="Item number of second connected part")
     connection_type: str = Field(description="Type of connection e.g. Threaded, Press-fit, Bolted")
-    fastener_item: Optional[int] = Field(default=None, description="Item number of fastener used")
-    drawing_evidence: str = Field(description="Evidence/view supporting this connection")
+    fastener_item: Optional[int] = Field(default=None, description="Item number of fastener used (must be verified against BOM)")
+    drawing_evidence: str = Field(description="Specific view, callout, or section reference supporting this connection")
     source_snippet: Optional[str] = Field(default=None, description="Exact text snippet, label, or note from the drawing supporting this connection")
+    is_verified: bool = Field(default=False, description="True only if both connected items and fastener exist in BOM with explicit visual proof")
+    page_number: int = Field(default=1, description="Source page number where connection evidence is located")
 
 class Part(BaseModel):
     item: int = Field(description="Item number from BOM callout")
@@ -20,17 +22,22 @@ class Part(BaseModel):
     extracted_text_snippet: Optional[str] = Field(default=None, description="Exact raw text read from the BOM row or callout label for strict traceability")
     properties: Dict[str, Any] = Field(default_factory=dict)
     uncertainty_notes: Optional[str] = Field(default=None)
+    confidence_score: Optional[float] = Field(default=None, description="Numerical confidence score (0.0 to 1.0) calculated from programmatic validation rules")
+    validation_status: Optional[str] = Field(default=None, description="Assigned status: Validated, Needs Review, or Failed Validation")
+    check_details: List[Dict[str, Any]] = Field(default_factory=list, description="Detailed programmatic rule checks and weights contributing to the score")
+    page_number: int = Field(default=1, description="Page number where this component appears")
 
 class AssemblyStep(BaseModel):
     step: int
     action: str
     parts: List[int]
-    confidence: str
-    evidence: str
+    confidence: str = Field(description="Must be 'Explicit' if directly backed by drawing notes/views, or 'Inferred' if deduced")
+    evidence: str = Field(description="Supporting view, note, or exploded indicator")
     source_reference: Optional[str] = Field(default=None, description="Reference note, view number, or exploded indicator supporting this step")
+    requires_review: bool = Field(default=False, description="True if step is inferred and requires manual manufacturing review")
 
 class AssemblyData(BaseModel):
-    name: str
+    name: str = Field(description="Exact Title/Name extracted from the Title Block of the drawing")
     source: str
     material: Optional[str] = None
     scale: Optional[str] = None
@@ -38,5 +45,5 @@ class AssemblyData(BaseModel):
     parts: List[Part] = Field(default_factory=list)
     connections: List[Connection] = Field(default_factory=list)
     assembly_steps: List[AssemblyStep] = Field(default_factory=list)
-    unresolved_uncertainties: List[str] = Field(default_factory=list, description="Ambiguous component mappings or unreadable text flagged for review")
+    unresolved_uncertainties: List[str] = Field(default=list, description="Ambiguous component mappings, unreadable text, or conflicting values flagged for review")
     validation_notes: List[str] = Field(default=list, description="Self-validation check notes verifying extracted data against input image")
