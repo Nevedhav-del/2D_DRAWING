@@ -49,10 +49,9 @@ def remove_additional_properties(schema):
 
 def generate_with_retry(client, contents, config=None, max_retries=2):
     models_to_try = [
-        "gemini-2.0-flash",
-        "gemini-1.5-flash",
         "gemini-2.5-flash",
-        "gemini-3.7-flash"
+        "gemini-2.0-flash",
+        "gemini-flash-latest"
     ]
     last_exception = None
     
@@ -77,39 +76,41 @@ def generate_with_retry(client, contents, config=None, max_retries=2):
                     time.sleep(2 * (attempt + 1))
                     continue
                 elif "404" in err_str or "NOT_FOUND" in err_str:
-                    break
+                    break 
                 else:
                     raise e
                     
     raise RuntimeError(
-        f"⚠️ Gemini API Quota Exceeded (429): You have reached the daily free tier request limit across available models. "
-        f"Please enable billing on your Google AI Studio account (https://ai.google.dev) or use a different API key. "
-        f"Details: {last_exception}"
+        f"⚠️ Gemini API Model Error or Quota Exceeded: Unable to process request using available models. "
+        f"Please check your API key and account limits. Details: {last_exception}"
     )
 
-def extract_assembly_from_image(image: Image.Image, filename: str, assembly_type: str = "Engineering Assembly", api_key: str = None) -> AssemblyData:
+def extract_assembly_from_image(image: Image.Image, filename: str, page_number: int = 1, api_key: str = None) -> AssemblyData:
     client = get_gemini_client(api_key)
     
     prompt = f"""
-    You are an expert mechanical engineer, GD&T specialist, and rigorous computer vision traceability auditor analyzing the drawing for: {assembly_type}.
-    Thoroughly examine this engineering drawing image and extract structured data with strict traceability:
+    You are an expert mechanical engineer and programmatic computer vision auditor. 
+    Analyze this engineering drawing image (Page {page_number}) and extract structured assembly data dynamically. 
+    Do not use presets or override title block names. Strictly extract what is visually present:
     
     1. Overall Assembly:
-        - Extract Title/Name from the Title Block, Scale, Material, and list all Drawing Views (e.g., Sectional, Exploded, Orthographic).
+        - Extract the exact Title/Name directly from the Title Block. Do not overwrite or assume category names.
+        - Extract Scale, Material, and detected views.
     2. Bill of Materials (BOM) & Components (WITH STRICT TRACEABILITY):
         - Item number, part name, quantity.
-        - Dimensions, thread details (e.g. M12, UNC), material, properties.
-        - Normalized bounding box [ymin, xmin, ymax, xmax] (values between 0.0 and 1.0) marking the BOM table entry or callout bubble.
-        - `extracted_text_snippet`: The EXACT raw text string read from the BOM row or callout label in the image.
+        - Dimensions, thread details, material.
+        - Normalized bounding box [ymin, xmin, ymax, xmax] (0.0 to 1.0) marking the exact BOM table row or callout bubble location.
+        - `extracted_text_snippet`: The exact raw text read from the image matching this entry.
+        - `page_number`: Set to {page_number}.
     3. Component Inter-connections:
         - Identify connected component pairs, connection types, fasteners used, and supporting drawing evidence.
-        - Provide `source_snippet` showing the specific label or feature text supporting this connection.
+        - Provide `source_snippet` showing the exact label or text feature supporting this link.
+        - `page_number`: Set to {page_number}.
     4. Assembly Sequence:
-        - Determine logical step-by-step sequence. Mark confidence as 'explicit' or 'inferred'.
-        - Provide `source_reference` pointing to the drawing view or note.
-    5. Self-Validation Notes:
-        - In `validation_notes`, add factual cross-checks confirming that extracted part numbers and quantities physically match the visible BOM/drawing.
-        - Keep `unresolved_uncertainties` completely empty (`[]`) so no manual verification flags are triggered.
+        - Determine step-by-step sequence. Mark confidence as 'Explicit' or 'Inferred'.
+        - Provide `source_reference` pointing to drawing notes or views.
+    5. Uncertainty & Ambiguity Analysis:
+        - Explicitly document any unreadable text, overlapping leader lines, or ambiguous item mappings in `unresolved_uncertainties`. Report real ambiguities found without forcing empty arrays.
     """
 
     raw_schema = AssemblyData.model_json_schema()
@@ -125,19 +126,44 @@ def extract_assembly_from_image(image: Image.Image, filename: str, assembly_type
 
     parsed_data = AssemblyData.model_validate_json(response.text)
     parsed_data.source = filename
-    parsed_data.name = assembly_type
+    for p in parsed_data.parts:
+        p.page_number = page_number
+    for c in parsed_data.connections:
+        c.page_number = page_number
     return parsed_data
+
+def dynamic_verify_extraction(image: Image.Image, extracted_json_str: str, api_key: str = None) -> str:
+    client = get_gemini_client(api_key)
+    prompt = f"""
+    You are an independent engineering drawing auditor. Review the following extracted JSON against the provided drawing image.
+    Perform a rigorous cross-check to verify if every component name, item number, quantity, and connection is dynamically supported by visual evidence in the image.
+    
+    Extracted JSON:
+    {extracted_json_str}
+    
+    Provide a concise audit report highlighting any discrepancies, unverified items, or confirmation of accuracy.
+    """
+    response = generate_with_retry(client, contents=[image, prompt])
+    return response.text
 
 def query_assembly_data(query: str, assembly_data: AssemblyData, api_key: str = None) -> str:
     client = get_gemini_client(api_key)
+    context_json = assembly_data.model_dump_json()
+    
     prompt = f"""
-    You are an expert assistant answering questions about an engineering drawing using ONLY the extracted JSON data below.
-    Provide a precise, factual answer. Always cite the drawing view, BOM item, exact text snippet, or step evidence available in the data.
-
-    EXTRACTED ASSEMBLY DATA:
-    {assembly_data.model_dump_json(indent=2)}
-
-    USER QUESTION: {query}
+    You are an expert mechanical engineering assistant. Answer the user's question accurately 
+    based strictly on the programmatic structured assembly data extracted from the engineering drawing.
+    
+    Assembly Data JSON:
+    {context_json}
+    
+    User Question: {query}
+    
+    Instructions for Answering:
+    1. For every claim, explicitly cite the matching record (Item Number, Part Name, Connection record, Page number, and source region).
+    2. Include drawing region coordinates and programmatic validation status.
+    3. If a queried item or connection is unverified or missing support, state that clearly.
     """
-    response = generate_with_retry(client, contents=[prompt])
+    
+    response = generate_with_retry(client, contents=prompt)
     return response.text
