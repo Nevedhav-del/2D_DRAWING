@@ -1,4 +1,5 @@
 ⚙️ Engineering Drawing to Structured Assembly System
+
 An automated Vision AI pipeline built with Streamlit, Google Gemini (GenAI SDK), and Pydantic that converts engineering drawings (PNG, JPG, JPEG, PDF) into structured, fully traceable, and queryable assembly data.
 
 🚀 Key Features
